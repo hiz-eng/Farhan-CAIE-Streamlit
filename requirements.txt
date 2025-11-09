@@ -6,3 +6,4 @@ scipy>=1.11
 joblib==1.5.2
 matplotlib>=3.8
 python-dotenv
+openai>=1.46.0
