@@ -1,25 +1,23 @@
 # app/streamlit_app.py
-import os
 import sys
+import numpy as np
 import pandas as pd
 import joblib
-import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st
 from gpt_utils import history_summary, prediction_explain
 
-# ---------- App & runtime tweaks ----------
+# ---------- Page setup ----------
 st.set_page_config(page_title="Sales Assistant", layout="wide")
 
-# Use 'poll' to avoid inotify watch errors on Streamlit Cloud
-st.set_option("server.fileWatcherType", "poll")
-
-# scikit-learn 1.6/1.7 unpickle compatibility:
-# Some 1.6 pickles reference _RemainderColsList; in 1.7 it was renamed to _RemainderColumnsList.
+# scikit-learn 1.6/1.7 unpickle compatibility
+# Some 1.6 pickles reference _RemainderColsList; 1.7 renamed it to _RemainderColumnsList.
 try:
     from sklearn.compose import _column_transformer as _ct
-    if not hasattr(_ct, "_RemainderColsList") and hasattr(_ct, "_RemainderColumnsList"):
-        _ct._RemainderColsList = _ct._RemainderColumnsList  # no-op on 1.6, alias on 1.7
+    if hasattr(_ct, "_RemainderColumnsList") and not hasattr(_ct, "_RemainderColsList"):
+        _ct._RemainderColsList = _ct._RemainderColumnsList
+    if hasattr(_ct, "_RemainderColsList") and not hasattr(_ct, "_RemainderColumnsList"):
+        _ct._RemainderColumnsList = _ct._RemainderColsList
 except Exception:
     pass
 
@@ -58,18 +56,16 @@ st.title("Sales Assistant (History + Prediction + GPT)")
 def compute_history(df: pd.DataFrame):
     monthly = df.groupby("YearMonth", as_index=False)["Amount"].sum()
     top_items = (
-        df.groupby("Item No.")["Amount"]
+        df.groupby("Item No.", as_index=False)["Amount"]
           .sum()
-          .sort_values(ascending=False)
+          .sort_values("Amount", ascending=False)
           .head(10)
-          .reset_index()
     )
     top_variants = (
-        df.groupby("Variant")["Amount"]
+        df.groupby("Variant", as_index=False)["Amount"]
           .sum()
-          .sort_values(ascending=False)
+          .sort_values("Amount", ascending=False)
           .head(10)
-          .reset_index()
     )
     return monthly, top_items, top_variants
 
@@ -83,6 +79,7 @@ tab1, tab2 = st.tabs(["📈 History & Insights", "🔮 Predict"])
 
 with tab1:
     st.subheader("Sales History (on-demand)")
+
     if st.button("▶ Run Sales Analysis", key="run_eda"):
         monthly, top_items, top_variants = compute_history(df4)
         st.session_state.eda_ready = True
@@ -93,7 +90,7 @@ with tab1:
         }
 
     if st.session_state.eda_ready and st.session_state.eda_payload:
-        # Rehydrate dataframes from session state
+        # Rehydrate from session state
         monthly = pd.DataFrame(st.session_state.eda_payload["monthly"])
         top_items = pd.DataFrame(st.session_state.eda_payload["top_items"])
         top_variants = pd.DataFrame(st.session_state.eda_payload["top_variants"])
@@ -107,7 +104,7 @@ with tab1:
         fig1.tight_layout()
         st.pyplot(fig1)
 
-        # --- Top 10 Products by Revenue (bar) ---
+        # --- Top 10 Products (bar) ---
         c1, c2 = st.columns(2)
         with c1:
             fig2, ax2 = plt.subplots(figsize=(6, 3))
@@ -120,7 +117,7 @@ with tab1:
             fig2.tight_layout()
             st.pyplot(fig2)
 
-        # --- Top 10 Variants by Revenue (bar) ---
+        # --- Top 10 Variants (bar) ---
         with c2:
             fig3, ax3 = plt.subplots(figsize=(6, 3))
             x2 = np.arange(len(top_variants))
@@ -133,10 +130,14 @@ with tab1:
             st.pyplot(fig3)
 
         # Facts for AI narrative
-        peak_idx = monthly["Amount"].idxmax()
-        trough_idx = monthly["Amount"].idxmin()
-        peak_row = monthly.loc[peak_idx] if not monthly.empty else None
-        trough_row = monthly.loc[trough_idx] if not monthly.empty else None
+        if not monthly.empty:
+            peak_idx = monthly["Amount"].idxmax()
+            trough_idx = monthly["Amount"].idxmin()
+            peak_row = monthly.loc[peak_idx]
+            trough_row = monthly.loc[trough_idx]
+        else:
+            peak_row = trough_row = None
+
         facts_hist = {
             "total_invoices": int(df4.shape[0]),
             "total_revenue": float(df4["Amount"].sum()),
