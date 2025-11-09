@@ -11,8 +11,8 @@ from gpt_utils import history_summary, prediction_explain
 # ---------- App & runtime tweaks ----------
 st.set_page_config(page_title="Sales Assistant", layout="wide")
 
-# Silence file-watcher warnings on Streamlit Cloud
-st.set_option("server.fileWatcherType", "none")
+# Use 'poll' to avoid inotify watch errors on Streamlit Cloud
+st.set_option("server.fileWatcherType", "poll")
 
 # scikit-learn 1.6/1.7 unpickle compatibility:
 # Some 1.6 pickles reference _RemainderColsList; in 1.7 it was renamed to _RemainderColumnsList.
@@ -39,7 +39,7 @@ with st.sidebar:
 @st.cache_data
 def load_data() -> pd.DataFrame:
     df = pd.read_csv("data/df4.csv", parse_dates=["Invoice date"])
-    df["YearMonth"] = df["Invoice date"].dt.to_period("M").to_timestamp()
+    df["YearMonth"] = df["Invoice date"].dt.to_period("M").dt.to_timestamp()
     return df
 
 @st.cache_resource
@@ -61,11 +61,11 @@ def compute_history(df: pd.DataFrame):
         df.groupby("Item No.")["Amount"]
           .sum()
           .sort_values(ascending=False)
-          .top(10) if hasattr(pd.Series, "top") else
-          df.groupby("Item No.")["Amount"].sum().sort_values(ascending=False).head(10)
-    ).reset_index()
+          .head(10)
+          .reset_index()
+    )
     top_variants = (
-        df.groupby("Variant")[ "Amount"]
+        df.groupby("Variant")["Amount"]
           .sum()
           .sort_values(ascending=False)
           .head(10)
@@ -178,7 +178,7 @@ with tab2:
         yhat = float(reg.predict(X)[0])
         st.metric("Predicted Amount (RM)", f"{yhat:,.0f}")
 
-        # High-value probability (robust try/except — this was the SyntaxError spot)
+        # High-value probability (robust try/except)
         try:
             p_high = float(clf.predict_proba(X)[0, 1])
             st.caption(f"High-Value probability: {p_high:.2%}")
