@@ -49,7 +49,19 @@ def load_models():
 df4 = load_data()
 reg, clf = load_models()
 
-st.title("Sales Assistant (History + Prediction + GPT)")
+st.markdown(
+    """
+    <h1 style='text-align: center; color: #0E1117;'>
+        Sales Performance Dashboard: Historical Analysis & AI-Driven Prediction
+    </h1>
+    <h5 style='text-align: center; color: #6C757D;'>
+        By: Ahmad Farhan Anwar – Assignment for Certified Artificial Intelligent Engineer (CAIE)
+    </h5>
+    <hr style='margin-top: 10px; margin-bottom: 20px;'>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # ---------- Helpers ----------
 @st.cache_data
