@@ -11,11 +11,11 @@ from gpt_utils import history_summary, prediction_explain
 # ---------- App & runtime tweaks ----------
 st.set_page_config(page_title="Sales Assistant", layout="wide")
 
-# Silence file-watcher errors on Streamlit Cloud ("inotify watch limit reached")
+# Silence file-watcher warnings on Streamlit Cloud
 st.set_option("server.fileWatcherType", "none")
 
 # scikit-learn 1.6/1.7 unpickle compatibility:
-# Some 1.6 pickles reference _RemainderColsList; in 1.7 it's renamed to _RemainderColumnsList.
+# Some 1.6 pickles reference _RemainderColsList; in 1.7 it was renamed to _RemainderColumnsList.
 try:
     from sklearn.compose import _column_transformer as _ct
     if not hasattr(_ct, "_RemainderColsList") and hasattr(_ct, "_RemainderColumnsList"):
@@ -23,7 +23,7 @@ try:
 except Exception:
     pass
 
-# Optional: show runtime versions in the sidebar for quick diagnostics
+# Optional: show runtime versions in the sidebar
 with st.sidebar:
     try:
         import sklearn
@@ -61,11 +61,11 @@ def compute_history(df: pd.DataFrame):
         df.groupby("Item No.")["Amount"]
           .sum()
           .sort_values(ascending=False)
-          .head(10)
-          .reset_index()
-    )
+          .top(10) if hasattr(pd.Series, "top") else
+          df.groupby("Item No.")["Amount"].sum().sort_values(ascending=False).head(10)
+    ).reset_index()
     top_variants = (
-        df.groupby("Variant")["Amount"]
+        df.groupby("Variant")[ "Amount"]
           .sum()
           .sort_values(ascending=False)
           .head(10)
@@ -73,7 +73,7 @@ def compute_history(df: pd.DataFrame):
     )
     return monthly, top_items, top_variants
 
-# Keep EDA results across reruns so the secondary "AI Summary" button works
+# Persist EDA results so the “AI Summary” button works after rerun
 if "eda_ready" not in st.session_state:
     st.session_state.eda_ready = False
     st.session_state.eda_payload = None
@@ -98,7 +98,7 @@ with tab1:
         top_items = pd.DataFrame(st.session_state.eda_payload["top_items"])
         top_variants = pd.DataFrame(st.session_state.eda_payload["top_variants"])
 
-        # --- Monthly Sales (line, explicit matplotlib so labels match Colab) ---
+        # --- Monthly Sales (line) ---
         fig1, ax1 = plt.subplots(figsize=(8, 3))
         ax1.plot(monthly["YearMonth"], monthly["Amount"], marker="o")
         ax1.set_title("Monthly Sales (Total Amount)")
@@ -107,11 +107,11 @@ with tab1:
         fig1.tight_layout()
         st.pyplot(fig1)
 
-        # --- Top 10 Products by Revenue (matplotlib bar with correct labels) ---
+        # --- Top 10 Products by Revenue (bar) ---
         c1, c2 = st.columns(2)
         with c1:
             fig2, ax2 = plt.subplots(figsize=(6, 3))
-            x = range(len(top_items))
+            x = np.arange(len(top_items))
             ax2.bar(x, top_items["Amount"])
             ax2.set_title("Top 10 Products by Revenue")
             ax2.set_xticks(x)
@@ -120,13 +120,10 @@ with tab1:
             fig2.tight_layout()
             st.pyplot(fig2)
 
-        # --- Top 10 Variants by Revenue (matplotlib bar) ---
+        # --- Top 10 Variants by Revenue (bar) ---
         with c2:
             fig3, ax3 = plt.subplots(figsize=(6, 3))
-            x2 = range(len(top_variants))
-            ax3.bar(x2, top_variants["Variant"].map(lambda x: x), )
-            # Matplotlib wants numeric x; we map to range and set labels:
-            ax3.clear()
+            x2 = np.arange(len(top_variants))
             ax3.bar(x2, top_variants["Amount"])
             ax3.set_title("Top 10 Variants by Revenue")
             ax3.set_xticks(x2)
@@ -176,15 +173,16 @@ with tab2:
         X = pd.DataFrame(
             [{"Item No.": item, "Variant": variant, "Quantity": int(qty), "Year": int(year), "Month": int(month)}]
         )
+
         # Prediction
         yhat = float(reg.predict(X)[0])
         st.metric("Predicted Amount (RM)", f"{yhat:,.0f}")
 
-        # High-value probability
+        # High-value probability (robust try/except — this was the SyntaxError spot)
         try:
             p_high = float(clf.predict_proba(X)[0, 1])
             st.caption(f"High-Value probability: {p_high:.2%}")
-        else:
+        except Exception:
             p_high = None
             st.caption("High-Value probability: n/a")
 
