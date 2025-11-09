@@ -5,7 +5,7 @@ import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
 import streamlit as st
-from gpt_utils import history_summary, prediction_explain
+from gpt_utils import history_summary, prediction_explain, gpt_csv_analyse, have_real_gpt
 
 # ---------- Page setup ----------
 st.set_page_config(page_title="Sales Assistant", layout="wide")
@@ -49,6 +49,7 @@ def load_models():
 df4 = load_data()
 reg, clf = load_models()
 
+# Title / Subtitle (your current header)
 st.markdown(
     """
     <h1 style='text-align: center; color: #0E1117;'>
@@ -61,7 +62,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
 
 # ---------- Helpers ----------
 @st.cache_data
@@ -81,17 +81,55 @@ def compute_history(df: pd.DataFrame):
     )
     return monthly, top_items, top_variants
 
+def build_ai_context(df: pd.DataFrame,
+                     monthly: pd.DataFrame,
+                     top_items: pd.DataFrame,
+                     top_variants: pd.DataFrame,
+                     top_k: int = 5) -> str:
+    """Compact, token-friendly summary of the CSV (no raw rows)."""
+    lines = []
+    period = f"{int(df['Year'].min())}-{int(df['Year'].max())}" if 'Year' in df.columns else ""
+    lines.append(f"rows={len(df)} invoices; period={period}")
+    lines.append(f"total_revenue={int(df['Amount'].sum())}")
+
+    # Last 12 monthly totals
+    m_tail = monthly.tail(12).copy()
+    try:
+        month_str = "; ".join(
+            f"{pd.to_datetime(r['YearMonth']).strftime('%Y-%m')}={int(r['Amount'])}"
+            for _, r in m_tail.iterrows()
+        )
+    except Exception:
+        month_str = "; ".join(
+            f"{str(r['YearMonth'])[:7]}={int(r['Amount'])}"
+            for _, r in m_tail.iterrows()
+        )
+    lines.append("monthly: " + month_str)
+
+    items_line = ", ".join(
+        f"{row['Item No.']}={int(row['Amount'])}"
+        for _, row in top_items.head(top_k).iterrows()
+    )
+    variants_line = ", ".join(
+        f"{row['Variant']}={int(row['Amount'])}"
+        for _, row in top_variants.head(top_k).iterrows()
+    )
+    lines.append("top_items: " + items_line)
+    lines.append("top_variants: " + variants_line)
+    return "\n".join(lines)
+
 # Persist EDA results so the “AI Summary” button works after rerun
 if "eda_ready" not in st.session_state:
     st.session_state.eda_ready = False
     st.session_state.eda_payload = None
 
 # ---------- Tabs ----------
-tab1, tab2 = st.tabs(["📈 History & Insights", "🔮 Predict"])
+# (Add the third tab; keep the first two unchanged)
+tab1, tab2, tab3 = st.tabs(["📈 History & Insights", "🔮 Predict", "🧠 AI Analyser"])
 
+# ---------------- Tab 1 (unchanged) ----------------
 with tab1:
     st.subheader("Sales History (on-demand)")
-
     if st.button("▶ Run Sales Analysis", key="run_eda"):
         monthly, top_items, top_variants = compute_history(df4)
         st.session_state.eda_ready = True
@@ -102,51 +140,38 @@ with tab1:
         }
 
     if st.session_state.eda_ready and st.session_state.eda_payload:
-        # Rehydrate from session state
         monthly = pd.DataFrame(st.session_state.eda_payload["monthly"])
         top_items = pd.DataFrame(st.session_state.eda_payload["top_items"])
         top_variants = pd.DataFrame(st.session_state.eda_payload["top_variants"])
 
-        # --- Monthly Sales (line) ---
         fig1, ax1 = plt.subplots(figsize=(8, 3))
         ax1.plot(monthly["YearMonth"], monthly["Amount"], marker="o")
         ax1.set_title("Monthly Sales (Total Amount)")
-        ax1.set_xlabel("Month")
-        ax1.set_ylabel("Revenue")
-        fig1.tight_layout()
-        st.pyplot(fig1)
+        ax1.set_xlabel("Month"); ax1.set_ylabel("Revenue")
+        fig1.tight_layout(); st.pyplot(fig1)
 
-        # --- Top 10 Products (bar) ---
         c1, c2 = st.columns(2)
         with c1:
             fig2, ax2 = plt.subplots(figsize=(6, 3))
             x = np.arange(len(top_items))
             ax2.bar(x, top_items["Amount"])
             ax2.set_title("Top 10 Products by Revenue")
-            ax2.set_xticks(x)
-            ax2.set_xticklabels(top_items["Item No."], rotation=45, ha="right")
+            ax2.set_xticks(x); ax2.set_xticklabels(top_items["Item No."], rotation=45, ha="right")
             ax2.set_ylabel("Total Revenue (Amount)")
-            fig2.tight_layout()
-            st.pyplot(fig2)
-
-        # --- Top 10 Variants (bar) ---
+            fig2.tight_layout(); st.pyplot(fig2)
         with c2:
             fig3, ax3 = plt.subplots(figsize=(6, 3))
             x2 = np.arange(len(top_variants))
             ax3.bar(x2, top_variants["Amount"])
             ax3.set_title("Top 10 Variants by Revenue")
-            ax3.set_xticks(x2)
-            ax3.set_xticklabels(top_variants["Variant"], rotation=45, ha="right")
+            ax3.set_xticks(x2); ax3.set_xticklabels(top_variants["Variant"], rotation=45, ha="right")
             ax3.set_ylabel("Total Revenue (Amount)")
-            fig3.tight_layout()
-            st.pyplot(fig3)
+            fig3.tight_layout(); st.pyplot(fig3)
 
-        # Facts for AI narrative
         if not monthly.empty:
             peak_idx = monthly["Amount"].idxmax()
             trough_idx = monthly["Amount"].idxmin()
-            peak_row = monthly.loc[peak_idx]
-            trough_row = monthly.loc[trough_idx]
+            peak_row = monthly.loc[peak_idx]; trough_row = monthly.loc[trough_idx]
         else:
             peak_row = trough_row = None
 
@@ -165,12 +190,12 @@ with tab1:
         if st.button("🧠 Generate AI Summary", key="ai_summary"):
             st.info("AI Summary")
             st.write(history_summary(facts_hist))
-
         with st.expander("Show last 5 months (parity check vs Colab)"):
             st.dataframe(monthly.tail(5))
     else:
         st.caption("Click **Run Sales Analysis** to compute charts (same logic as in Colab).")
 
+# ---------------- Tab 2 (unchanged) ----------------
 with tab2:
     st.subheader("Predict Invoice Amount")
     c1, c2, c3 = st.columns(3)
@@ -183,15 +208,14 @@ with tab2:
     month = c5.selectbox("Month", sorted(df4["Month"].unique()))
 
     if st.button("Predict", key="predict_btn"):
-        X = pd.DataFrame(
-            [{"Item No.": item, "Variant": variant, "Quantity": int(qty), "Year": int(year), "Month": int(month)}]
-        )
+        X = pd.DataFrame([{
+            "Item No.": item, "Variant": variant, "Quantity": int(qty),
+            "Year": int(year), "Month": int(month)
+        }])
 
-        # Prediction
         yhat = float(reg.predict(X)[0])
         st.metric("Predicted Amount (RM)", f"{yhat:,.0f}")
 
-        # High-value probability (robust try/except)
         try:
             p_high = float(clf.predict_proba(X)[0, 1])
             st.caption(f"High-Value probability: {p_high:.2%}")
@@ -199,7 +223,33 @@ with tab2:
             p_high = None
             st.caption("High-Value probability: n/a")
 
-        # AI explanation (stubbed)
         facts_pred = {"inputs": X.iloc[0].to_dict(), "prediction_amount": yhat, "p_high": p_high}
         st.subheader("AI Explanation")
         st.write(prediction_explain(facts_pred))
+
+# ---------------- Tab 3 (NEW) ----------------
+with tab3:
+    st.subheader("AI Analyser (GPT on CSV only)")
+    st.caption("This uses the **CSV only** (no models). We send a compact summary of the dataset to GPT for analysis.")
+
+    # Build compact context (safe for tokens)
+    monthly, top_items, top_variants = compute_history(df4)
+    context_text = build_ai_context(df4, monthly, top_items, top_variants, top_k=5)
+
+    with st.expander("See the compact dataset summary sent to AI"):
+        st.code(context_text, language="text")
+
+    default_q = (
+        "Write an executive summary of sales: total revenue, peak & trough months with amounts, "
+        "top 5 products and variants, month-over-month trend, and 3 actionable recommendations."
+    )
+    question = st.text_area("Ask the AI about the CSV", value=default_q, height=140)
+    model_name = st.selectbox("Model", ["gpt-4o-mini", "gpt-4o", "o4-mini"], index=0)
+
+    if st.button("Run AI Analysis", key="run_ai"):
+        with st.spinner("Generating AI analysis…"):
+            answer = gpt_csv_analyse(context_text, question, model=model_name)
+        if not have_real_gpt():
+            st.warning("Running in stub mode because **OPENAI_API_KEY** is not set. "
+                       "Add it in Streamlit Cloud → Settings → Secrets to enable real GPT.")
+        st.markdown(answer)
