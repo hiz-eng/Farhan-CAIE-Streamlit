@@ -1,13 +1,45 @@
-
-import streamlit as st, pandas as pd, joblib, matplotlib.pyplot as plt
+# app/streamlit_app.py
+import os
+import sys
+import pandas as pd
+import joblib
+import numpy as np
+import matplotlib.pyplot as plt
+import streamlit as st
 from gpt_utils import history_summary, prediction_explain
 
+# ---------- App & runtime tweaks ----------
 st.set_page_config(page_title="Sales Assistant", layout="wide")
 
+# Silence file-watcher errors on Streamlit Cloud ("inotify watch limit reached")
+st.set_option("server.fileWatcherType", "none")
+
+# scikit-learn 1.6/1.7 unpickle compatibility:
+# Some 1.6 pickles reference _RemainderColsList; in 1.7 it's renamed to _RemainderColumnsList.
+try:
+    from sklearn.compose import _column_transformer as _ct
+    if not hasattr(_ct, "_RemainderColsList") and hasattr(_ct, "_RemainderColumnsList"):
+        _ct._RemainderColsList = _ct._RemainderColumnsList  # no-op on 1.6, alias on 1.7
+except Exception:
+    pass
+
+# Optional: show runtime versions in the sidebar for quick diagnostics
+with st.sidebar:
+    try:
+        import sklearn
+        st.caption(
+            f"**Env**  \n"
+            f"sklearn `{sklearn.__version__}` · joblib `{joblib.__version__}` · "
+            f"pandas `{pd.__version__}` · numpy `{np.__version__}` · py `{sys.version.split()[0]}`"
+        )
+    except Exception:
+        pass
+
+# ---------- Data & models ----------
 @st.cache_data
-def load_data():
+def load_data() -> pd.DataFrame:
     df = pd.read_csv("data/df4.csv", parse_dates=["Invoice date"])
-    df["YearMonth"] = df["Invoice date"].dt.to_period("M").dt.to_timestamp()
+    df["YearMonth"] = df["Invoice date"].dt.to_period("M").to_timestamp()
     return df
 
 @st.cache_resource
@@ -18,66 +50,145 @@ def load_models():
 
 df4 = load_data()
 reg, clf = load_models()
+
 st.title("Sales Assistant (History + Prediction + GPT)")
 
+# ---------- Helpers ----------
+@st.cache_data
+def compute_history(df: pd.DataFrame):
+    monthly = df.groupby("YearMonth", as_index=False)["Amount"].sum()
+    top_items = (
+        df.groupby("Item No.")["Amount"]
+          .sum()
+          .sort_values(ascending=False)
+          .head(10)
+          .reset_index()
+    )
+    top_variants = (
+        df.groupby("Variant")["Amount"]
+          .sum()
+          .sort_values(ascending=False)
+          .head(10)
+          .reset_index()
+    )
+    return monthly, top_items, top_variants
+
+# Keep EDA results across reruns so the secondary "AI Summary" button works
+if "eda_ready" not in st.session_state:
+    st.session_state.eda_ready = False
+    st.session_state.eda_payload = None
+
+# ---------- Tabs ----------
 tab1, tab2 = st.tabs(["📈 History & Insights", "🔮 Predict"])
 
 with tab1:
     st.subheader("Sales History (on-demand)")
-    run_eda = st.button("▶ Run Sales Analysis")
-    if run_eda:
-        monthly = df4.groupby("YearMonth")["Amount"].sum().reset_index()
-        top_items = (df4.groupby("Item No.")["Amount"].sum().sort_values(ascending=False).head(10).reset_index())
-        top_variants = (df4.groupby("Variant")["Amount"].sum().sort_values(ascending=False).head(10).reset_index())
+    if st.button("▶ Run Sales Analysis", key="run_eda"):
+        monthly, top_items, top_variants = compute_history(df4)
+        st.session_state.eda_ready = True
+        st.session_state.eda_payload = {
+            "monthly": monthly.to_dict(orient="records"),
+            "top_items": top_items.to_dict(orient="records"),
+            "top_variants": top_variants.to_dict(orient="records"),
+        }
 
-        st.write("**Monthly Sales (Total Amount)**")
-        fig1, ax1 = plt.subplots(figsize=(8,3))
+    if st.session_state.eda_ready and st.session_state.eda_payload:
+        # Rehydrate dataframes from session state
+        monthly = pd.DataFrame(st.session_state.eda_payload["monthly"])
+        top_items = pd.DataFrame(st.session_state.eda_payload["top_items"])
+        top_variants = pd.DataFrame(st.session_state.eda_payload["top_variants"])
+
+        # --- Monthly Sales (line, explicit matplotlib so labels match Colab) ---
+        fig1, ax1 = plt.subplots(figsize=(8, 3))
         ax1.plot(monthly["YearMonth"], monthly["Amount"], marker="o")
-        ax1.set_xlabel("Month"); ax1.set_ylabel("Revenue")
-        fig1.tight_layout(); st.pyplot(fig1)
+        ax1.set_title("Monthly Sales (Total Amount)")
+        ax1.set_xlabel("Month")
+        ax1.set_ylabel("Revenue")
+        fig1.tight_layout()
+        st.pyplot(fig1)
 
+        # --- Top 10 Products by Revenue (matplotlib bar with correct labels) ---
         c1, c2 = st.columns(2)
         with c1:
-            st.write("**Top 10 Products by Revenue**")
-            st.bar_chart(top_items.set_index("Item No.")["Amount"])
-        with c2:
-            st.write("**Top 10 Variants by Revenue**")
-            st.bar_chart(top_variants.set_index("Variant")["Amount"])
+            fig2, ax2 = plt.subplots(figsize=(6, 3))
+            x = range(len(top_items))
+            ax2.bar(x, top_items["Amount"])
+            ax2.set_title("Top 10 Products by Revenue")
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(top_items["Item No."], rotation=45, ha="right")
+            ax2.set_ylabel("Total Revenue (Amount)")
+            fig2.tight_layout()
+            st.pyplot(fig2)
 
-        peak = monthly.loc[monthly["Amount"].idxmax()]
-        trough = monthly.loc[monthly["Amount"].idxmin()]
+        # --- Top 10 Variants by Revenue (matplotlib bar) ---
+        with c2:
+            fig3, ax3 = plt.subplots(figsize=(6, 3))
+            x2 = range(len(top_variants))
+            ax3.bar(x2, top_variants["Variant"].map(lambda x: x), )
+            # Matplotlib wants numeric x; we map to range and set labels:
+            ax3.clear()
+            ax3.bar(x2, top_variants["Amount"])
+            ax3.set_title("Top 10 Variants by Revenue")
+            ax3.set_xticks(x2)
+            ax3.set_xticklabels(top_variants["Variant"], rotation=45, ha="right")
+            ax3.set_ylabel("Total Revenue (Amount)")
+            fig3.tight_layout()
+            st.pyplot(fig3)
+
+        # Facts for AI narrative
+        peak_idx = monthly["Amount"].idxmax()
+        trough_idx = monthly["Amount"].idxmin()
+        peak_row = monthly.loc[peak_idx] if not monthly.empty else None
+        trough_row = monthly.loc[trough_idx] if not monthly.empty else None
         facts_hist = {
             "total_invoices": int(df4.shape[0]),
             "total_revenue": float(df4["Amount"].sum()),
-            "peak_month": str(peak["YearMonth"].date()),
-            "peak_revenue": float(peak["Amount"]),
-            "trough_month": str(trough["YearMonth"].date()),
-            "trough_revenue": float(trough["Amount"]),
+            "monthly": monthly.tail(12).to_dict(orient="records"),
+            "peak_month": (str(pd.to_datetime(peak_row["YearMonth"]).date()) if peak_row is not None else None),
+            "peak_revenue": (float(peak_row["Amount"]) if peak_row is not None else None),
+            "trough_month": (str(pd.to_datetime(trough_row["YearMonth"]).date()) if trough_row is not None else None),
+            "trough_revenue": (float(trough_row["Amount"]) if trough_row is not None else None),
             "top_items": top_items.head(5).to_dict(orient="records"),
-            "top_variants": top_variants.head(5).to_dict(orient="records")
+            "top_variants": top_variants.head(5).to_dict(orient="records"),
         }
-        if st.button("🧠 Generate AI Summary"):
+
+        if st.button("🧠 Generate AI Summary", key="ai_summary"):
             st.info("AI Summary")
             st.write(history_summary(facts_hist))
+
+        with st.expander("Show last 5 months (parity check vs Colab)"):
+            st.dataframe(monthly.tail(5))
     else:
         st.caption("Click **Run Sales Analysis** to compute charts (same logic as in Colab).")
 
 with tab2:
     st.subheader("Predict Invoice Amount")
-    c1,c2,c3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
     item = c1.selectbox("Item No.", sorted(df4["Item No."].unique()))
     variant = c2.selectbox("Variant", sorted(df4["Variant"].unique()))
     qty = c3.number_input("Quantity", min_value=1, value=1, step=1)
-    c4,c5 = st.columns(2)
+
+    c4, c5 = st.columns(2)
     year = c4.selectbox("Year", sorted(df4["Year"].unique()))
     month = c5.selectbox("Month", sorted(df4["Month"].unique()))
 
-    if st.button("Predict"):
-        X = pd.DataFrame([{"Item No.": item, "Variant": variant, "Quantity": qty, "Year": int(year), "Month": int(month)}])
+    if st.button("Predict", key="predict_btn"):
+        X = pd.DataFrame(
+            [{"Item No.": item, "Variant": variant, "Quantity": int(qty), "Year": int(year), "Month": int(month)}]
+        )
+        # Prediction
         yhat = float(reg.predict(X)[0])
         st.metric("Predicted Amount (RM)", f"{yhat:,.0f}")
-        p_high = float(clf.predict_proba(X)[0,1])
-        st.caption(f"High-Value probability: {p_high:.2%}")
+
+        # High-value probability
+        try:
+            p_high = float(clf.predict_proba(X)[0, 1])
+            st.caption(f"High-Value probability: {p_high:.2%}")
+        else:
+            p_high = None
+            st.caption("High-Value probability: n/a")
+
+        # AI explanation (stubbed)
         facts_pred = {"inputs": X.iloc[0].to_dict(), "prediction_amount": yhat, "p_high": p_high}
         st.subheader("AI Explanation")
         st.write(prediction_explain(facts_pred))
